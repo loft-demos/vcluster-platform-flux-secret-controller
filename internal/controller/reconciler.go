@@ -332,14 +332,14 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 	spec := map[string]any{
 		"displayName": display,
 		"key":         token,
-		"type":        akType, // default "User"
+		"type":        akType, // "User" or "Other""
 		"scope": map[string]any{
 			"virtualClusters": []any{
 				map[string]any{"project": project, "virtualCluster": vci.GetName()},
 			},
 		},
 	}
-	if strings.EqualFold(r.Opts.AccessKeyType, "User") && r.Opts.AccessKeyTeam != "" {
+	if strings.EqualFold(akType, "User") && r.Opts.AccessKeyTeam != "" {
 		spec["team"] = r.Opts.AccessKeyTeam
 	}
 
