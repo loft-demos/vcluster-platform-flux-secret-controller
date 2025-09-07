@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -26,19 +27,19 @@ import (
 )
 
 type Options struct {
-	LabelSelector         string
-	SecretKey             string
-	SecretPrefix          string
-	LoftDomain            string
-	ServerTemplate        string
-	CASecretNS            string
-	CASecretName          string
-	CASecretKey           string
-	FluxNamespacePatterns []string
-	ControllerNamespace   string
-	PassthroughPrefixes   []string
-	AccessKeyType         string // "User" or "Other"
-	AccessKeyTeam         string // e.g., "loft-admins"
+	LabelSelector            string
+	SecretKey                string
+	SecretPrefix             string
+	LoftDomain               string
+	ServerTemplate           string
+	CASecretNS               string
+	CASecretName             string
+	CASecretKey              string
+	FluxNamespacePatterns    []string
+	ControllerNamespace      string
+	PassthroughPrefixes      []string
+	AccessKeyType            string // "User" or "Other"
+	AccessKeyTeam            string // e.g., "loft-admins"
 	AccessKeyDisplayNameTmpl string // e.g., "flux-{{ .Name }}"
 }
 
@@ -140,10 +141,23 @@ func (r *VciReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	vci.SetGroupVersionKind(gvkVCI)
 	if err := r.Get(ctx, req.NamespacedName, &vci); err != nil {
 		if apierrors.IsNotFound(err) {
-			// VCI deleted: GC secrets + AccessKey + token secret
-			_ = r.gcAllFluxSecretsForVCI(ctx, req.Namespace, req.Name)
-			_ = r.deleteAccessKey(ctx, req.Name)
-			_ = r.deleteTokenSecret(ctx, req.Name)
+			// VCI deleted: GC secrets + AccessKey + token secret, with summary log
+			project := projectFromNamespace(req.Namespace)
+
+			secN, secErr := r.gcAllFluxSecretsForVCI(ctx, req.Namespace, req.Name)
+			akOK, akErr := r.deleteAccessKey(ctx, project, req.Name) // project-qualified AK name
+			tokOK, tokErr := r.deleteTokenSecret(ctx, req.Name)
+
+			crlog.FromContext(ctx).Info("cleanup after VCI delete",
+				"vci", req.NamespacedName.String(),
+				"project", project,
+				"secretsDeleted", secN,
+				"accessKeyDeleted", akOK,
+				"tokenSecretDeleted", tokOK,
+				"secErr", client.IgnoreNotFound(secErr),
+				"akErr", client.IgnoreNotFound(akErr),
+				"tokErr", client.IgnoreNotFound(tokErr),
+			)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -218,10 +232,10 @@ func (r *VciReconciler) upsertFluxSecretInNS(ctx context.Context, vci *unstructu
 	// merge VCI label passthrough
 	pt := r.passthroughVCILabels(vci.GetLabels())
 	for k, v := range pt {
-	  // don't allow passthrough to clobber reserved
-	  if _, exists := lbl[k]; !exists {
-	    lbl[k] = v
-	  }
+		// don't allow passthrough to clobber reserved
+		if _, exists := lbl[k]; !exists {
+			lbl[k] = v
+		}
 	}
 	ann := map[string]string{
 		"vci.flux.loft.sh/kcfg-sha256": sumHex,
@@ -264,7 +278,8 @@ func (r *VciReconciler) upsertFluxSecretInNS(ctx context.Context, vci *unstructu
 	return nil
 }
 
-func (r *VciReconciler) gcAllFluxSecretsForVCI(ctx context.Context, vciNamespace, vciName string) error {
+// return number of secrets deleted
+func (r *VciReconciler) gcAllFluxSecretsForVCI(ctx context.Context, vciNamespace, vciName string) (int, error) {
 	var list corev1.SecretList
 	sel := labels.SelectorFromSet(map[string]string{
 		"app.kubernetes.io/managed-by": "vcluster-platform-flux-secret-controller",
@@ -272,28 +287,40 @@ func (r *VciReconciler) gcAllFluxSecretsForVCI(ctx context.Context, vciNamespace
 		"vci.flux.loft.sh/namespace":   vciNamespace,
 	})
 	if err := r.List(ctx, &list, &client.ListOptions{LabelSelector: sel}); err != nil {
-		return err
+		return 0, err
 	}
+	deleted := 0
 	for i := range list.Items {
-		_ = r.Delete(ctx, &list.Items[i])
+		if err := r.Delete(ctx, &list.Items[i]); client.IgnoreNotFound(err) == nil {
+			deleted++
+		}
 	}
-	return nil
+	return deleted, nil
 }
 
-func (r *VciReconciler) deleteAccessKey(ctx context.Context, vciName string) error {
+func (r *VciReconciler) deleteAccessKey(ctx context.Context, project, vciName string) (bool, error) {
 	ak := unstructured.Unstructured{}
 	ak.SetGroupVersionKind(gvkAK)
-	ak.SetName(accessKeyName(vciName))
-	return client.IgnoreNotFound(r.Delete(ctx, &ak))
+	ak.SetName(accessKeyName(project, vciName))
+	err := r.Delete(ctx, &ak)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
-func (r *VciReconciler) deleteTokenSecret(ctx context.Context, vciName string) error {
-	return client.IgnoreNotFound(r.Delete(ctx, &corev1.Secret{
+func (r *VciReconciler) deleteTokenSecret(ctx context.Context, vciName string) (bool, error) {
+	s := &corev1.Secret{
 		ObjectMeta: meta.ObjectMeta{
 			Name:      tokenSecretName(r.Opts.SecretPrefix, vciName),
 			Namespace: r.Opts.ControllerNamespace,
 		},
-	}))
+	}
+	err := r.Delete(ctx, s)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstructured.Unstructured) (string, error) {
@@ -314,25 +341,27 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 		token = t
 	}
 
+	// compute project FIRST so we can name the AK correctly
+	project := projectFromNamespace(vci.GetNamespace())
+
 	// 1) Upsert AccessKey with "User" shape (team + displayName), scoped to this VCI
 	ak := unstructured.Unstructured{}
 	ak.SetGroupVersionKind(gvkAK)
 	ak.SetName(accessKeyName(project, vci.GetName()))
 
-	project := projectFromNamespace(vci.GetNamespace())
 	display := renderDisplayName(r.Opts.AccessKeyDisplayNameTmpl, vci.GetName(), project, vci.GetNamespace())
 
 	// pick AK type from options, default to "User"
 	akType := r.Opts.AccessKeyType
 	if akType == "" {
-	  akType = "User"
+		akType = "User"
 	}
 
 	// Build spec like your Bash App example
 	spec := map[string]any{
 		"displayName": display,
 		"key":         token,
-		"type":        akType, // "User" or "Other""
+		"type":        akType, // "User" or "Other"
 		"scope": map[string]any{
 			"virtualClusters": []any{
 				map[string]any{"project": project, "virtualCluster": vci.GetName()},
@@ -441,16 +470,16 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 }
 
 func randomToken(n int) (string, error) {
-    const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    b := make([]byte, n)
-    for i := range b {
-        num, err := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
-        if err != nil {
-            return "", err
-        }
-        b[i] = letters[num.Int64()]
-    }
-    return string(b), nil
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
+		if err != nil {
+			return "", err
+		}
+		b[i] = letters[num.Int64()]
+	}
+	return string(b), nil
 }
 
 func (r *VciReconciler) secretNameFor(vciName string) string {
