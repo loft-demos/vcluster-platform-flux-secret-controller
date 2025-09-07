@@ -37,7 +37,7 @@ type Options struct {
 	CASecretKey              string
 	FluxNamespacePatterns    []string
 	ControllerNamespace      string
-	PassthroughPrefixes      []string
+	PassthroughPrefixes      []string // (kept for compatibility; no longer used when copying all labels)
 	AccessKeyType            string // "User" or "Other"
 	AccessKeyTeam            string // e.g., "loft-admins"
 	AccessKeyDisplayNameTmpl string // e.g., "flux-{{ .Name }}"
@@ -66,17 +66,12 @@ var (
 	}
 )
 
-// returns a copy of labels from obj that start with any allowed prefix.
-// excludes keys we manage or that are kube/systemy by default.
-func (r *VciReconciler) passthroughVCILabels(all map[string]string) map[string]string {
+// copyAllVCILabels copies ALL labels from the VCI into the outgoing Secret labels,
+// except reserved/system keys. Controller/Flux labels we set locally always win.
+func (r *VciReconciler) copyAllVCILabels(all map[string]string) map[string]string {
 	out := map[string]string{}
 	if len(all) == 0 {
 		return out
-	}
-	// defaults if none provided
-	prefixes := r.Opts.PassthroughPrefixes
-	if len(prefixes) == 0 {
-		prefixes = []string{"flux-app/"} // sensible default
 	}
 	// keys we own and should never overwrite
 	reserved := map[string]struct{}{
@@ -85,26 +80,17 @@ func (r *VciReconciler) passthroughVCILabels(all map[string]string) map[string]s
 		"fluxcd.io/secret-type":        {},
 		"vci.flux.loft.sh/name":        {},
 		"vci.flux.loft.sh/namespace":   {},
+		"vci.flux.loft.sh/project":     {},
 	}
 	for k, v := range all {
-		// skip reserved & common system prefixes
+		// skip common system/app keys; everything else is copied
 		if _, ok := reserved[k]; ok {
 			continue
 		}
-		if strings.HasPrefix(k, "kubernetes.io/") || strings.HasPrefix(k, "k8s.io/") || strings.HasPrefix(k, "app.kubernetes.io/") {
+		if strings.HasPrefix(k, "kubernetes.io/") || strings.HasPrefix(k, "k8s.io/") {
 			continue
 		}
-		// match on any configured prefix
-		for _, p := range prefixes {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			if strings.HasPrefix(k, p) {
-				out[k] = v
-				break
-			}
-		}
+		out[k] = v
 	}
 	return out
 }
@@ -116,7 +102,7 @@ func (r *VciReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Label-based filtering predicate
 	pred := predicate.NewPredicateFuncs(func(o client.Object) bool {
 		if o == nil {
-			return false
+		 return false
 		}
 		if r.Opts.LabelSelector == "" {
 			return true
@@ -165,7 +151,7 @@ func (r *VciReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	phase, _, _ := unstructured.NestedString(vci.Object, "status", "phase")
 	if phase != "Ready" {
-		log.V(1).Info("VCI not Ready yet", "phase", phase)
+		log.Info("VCI not Ready yet", "phase", phase)
 		return ctrl.Result{}, nil
 	}
 
@@ -200,43 +186,44 @@ func (r *VciReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, fmt.Errorf("build kubeconfig: %w", err)
 	}
 
-	// 3) Resolve Flux namespaces (exact + globs)
+	// 3) Resolve Flux namespaces (exact + globs) and upsert per-NS secrets
 	nsList, err := r.resolveFluxNamespaces(ctx)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("resolve namespaces: %w", err)
 	}
 	for _, ns := range nsList {
-		if err := r.upsertFluxSecretInNS(ctx, &vci, ns, kcfgBytes, ksum); err != nil {
+		if err := r.upsertFluxSecretInNS(ctx, &vci, project, ns, kcfgBytes, ksum); err != nil {
 			return ctrl.Result{}, fmt.Errorf("upsert secret in %s: %w", ns, err)
 		}
 	}
 
-	log.V(1).Info("reconciled VCI", "namespaces", strings.Join(nsList, ","))
+	log.Info("reconciled VCI", "namespaces", strings.Join(nsList, ","))
 	return ctrl.Result{}, nil
 }
 
 // ----- helpers -----
 
-func (r *VciReconciler) upsertFluxSecretInNS(ctx context.Context, vci *unstructured.Unstructured, ns string, kcfg []byte, sumHex string) error {
-	name := r.secretNameFor(vci.GetName())
+func (r *VciReconciler) upsertFluxSecretInNS(ctx context.Context, vci *unstructured.Unstructured, project, ns string, kcfg []byte, sumHex string) error {
+	name := r.secretNameFor(project, vci.GetName())
 	k := r.Opts.SecretKey
 	want := map[string][]byte{k: kcfg}
 
+	// base labels we always set
 	lbl := map[string]string{
 		"app.kubernetes.io/managed-by": "vcluster-platform-flux-secret-controller",
 		"fluxcd.io/kubeconfig":         "true",
 		"fluxcd.io/secret-type":        "cluster",
 		"vci.flux.loft.sh/name":        vci.GetName(),
 		"vci.flux.loft.sh/namespace":   vci.GetNamespace(),
+		"vci.flux.loft.sh/project":     project,
 	}
-	// merge VCI label passthrough
-	pt := r.passthroughVCILabels(vci.GetLabels())
-	for k, v := range pt {
-		// don't allow passthrough to clobber reserved
-		if _, exists := lbl[k]; !exists {
-			lbl[k] = v
+	// merge ALL user labels from VCI (minus reserved/system), without clobbering our base
+	for k2, v2 := range r.copyAllVCILabels(vci.GetLabels()) {
+		if _, reserved := lbl[k2]; !reserved {
+			lbl[k2] = v2
 		}
 	}
+
 	ann := map[string]string{
 		"vci.flux.loft.sh/kcfg-sha256": sumHex,
 	}
@@ -270,8 +257,8 @@ func (r *VciReconciler) upsertFluxSecretInNS(ctx context.Context, vci *unstructu
 		if existing.Labels == nil {
 			existing.Labels = map[string]string{}
 		}
-		for k, v := range lbl {
-			existing.Labels[k] = v
+		for k2, v2 := range lbl {
+			existing.Labels[k2] = v2
 		}
 		return r.Update(ctx, &existing)
 	}
@@ -456,15 +443,18 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 		}
 	}
 
-	// Debug fingerprint (safe)
-	if len(token) >= 6 {
-		r.Log.V(1).Info("AccessKey ensured (User/team style)",
-			"displayName", display,
-			"team", r.Opts.AccessKeyTeam,
-			"project", project,
-			"tokenPrefix", token[:6],
-		)
-	}
+	// Always visible
+	r.Log.Info("AccessKey ensured (User/team style)",
+		"displayName", display,
+		"team", r.Opts.AccessKeyTeam,
+		"project", project,
+		"tokenPrefix", func() string {
+			if len(token) >= 6 {
+				return token[:6]
+			}
+			return ""
+		}(),
+	)
 
 	return token, nil
 }
@@ -482,8 +472,9 @@ func randomToken(n int) (string, error) {
 	return string(b), nil
 }
 
-func (r *VciReconciler) secretNameFor(vciName string) string {
-	return fmt.Sprintf("%s%s-kubeconfig", r.Opts.SecretPrefix, vciName)
+func (r *VciReconciler) secretNameFor(project, vciName string) string {
+	// include project in secret name to avoid collisions across projects
+	return fmt.Sprintf("%s%s-%s-kubeconfig", r.Opts.SecretPrefix, project, vciName)
 }
 
 func tokenSecretName(prefix, vciName string) string {
