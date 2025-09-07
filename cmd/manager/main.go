@@ -8,6 +8,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // cloud auth providers
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/loft-demos/vcluster-platform-flux-secret-controller/internal/controller"
 )
@@ -45,10 +46,10 @@ func main() {
 	flag.Parse()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		MetricsBindAddress:     ":8080",
-		HealthProbeBindAddress: ":8081",
-		LeaderElection:         true,
-		LeaderElectionID:       "vcluster-platform-flux-secret-controller",
+	    Metrics:               server.Options{BindAddress: ":8080"}, // was MetricsBindAddress
+	    HealthProbeBindAddress: ":8081",
+	    LeaderElection:         true,
+	    LeaderElectionID:       "vcluster-platform-flux-secret-controller",
 	})
 	if err != nil {
 		panic(err)
