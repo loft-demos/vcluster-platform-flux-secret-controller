@@ -304,7 +304,7 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 
 	// 1) Mint token if missing
 	if token == "" {
-		t, err := randomToken(48)
+		t, err := randomToken(64)
 		if err != nil {
 			return "", err
 		}
