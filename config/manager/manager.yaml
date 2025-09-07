@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vcluster-platform-flux-secret-controller
+  namespace: vci-flux-secret-controller
+  labels:
+    app: vcluster-platform-flux-secret-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vcluster-platform-flux-secret-controller
+  template:
+    metadata:
+      labels:
+        app: vcluster-platform-flux-secret-controller
+    spec:
+      serviceAccountName: vcluster-platform-flux-secret-controller
+      containers:
+        - name: manager
+          image: ghcr.io/loft-demos/vcluster-platform-flux-secret-controller:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--selector=gitops.flux/enabled=true"
+            - "--secret-key=value"
+            - "--secret-name-prefix=vci-"
+            - "--server-template=https://{{ .Domain }}/kubernetes/project/{{ .Project }}/virtualcluster/{{ .Name }}"
+            - "--loft-domain=alpha.us.demo.dev"
+            - "--flux-namespaces=flux-*"
+            - "--controller-namespace=vci-flux-secret-controller"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
