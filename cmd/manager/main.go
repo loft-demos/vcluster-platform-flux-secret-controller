@@ -7,6 +7,8 @@ import (
 
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // cloud auth providers
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -14,8 +16,9 @@ import (
 )
 
 func main() {
-	// Add core scheme (we use core types + unstructured CRDs)
-	_ = clientgoscheme.AddToScheme(nil)
+	// Build a real scheme and register core types
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	var (
 		labelSelector  string
@@ -30,7 +33,7 @@ func main() {
 		controllerNS   string
 	)
 
-	flag.StringVar(&labelSelector, "selector", "gitops.flux/enabled=true", "label selector for VCIs")
+	flag.StringVar(&labelSelector, "selector", "vcluster.com/import-fluxcd=true", "label selector for VCIs")
 	flag.StringVar(&secretKey, "secret-key", "value", "Secret.data key to store kubeconfig (Flux expects 'value' or 'value.yaml')")
 	flag.StringVar(&secretPrefix, "secret-name-prefix", "vci-", "prefix for created kubeconfig secret names")
 	flag.StringVar(&serverTmpl, "server-template",
@@ -46,10 +49,11 @@ func main() {
 	flag.Parse()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-	    Metrics:               server.Options{BindAddress: ":8080"}, // was MetricsBindAddress
-	    HealthProbeBindAddress: ":8081",
-	    LeaderElection:         true,
-	    LeaderElectionID:       "vcluster-platform-flux-secret-controller",
+		Scheme:                 scheme,
+		Metrics:                server.Options{BindAddress: ":8080"},
+		HealthProbeBindAddress: ":8081",
+		LeaderElection:         true,
+		LeaderElectionID:       "vcluster-platform-flux-secret-controller",
 	})
 	if err != nil {
 		panic(err)
