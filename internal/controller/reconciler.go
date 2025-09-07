@@ -33,6 +33,7 @@ type Options struct {
 	CASecretKey           string
 	FluxNamespacePatterns []string
 	ControllerNamespace   string
+	PassthroughPrefixes   []string
 }
 
 type VciReconciler struct {
@@ -57,6 +58,49 @@ var (
 		Kind:    "AccessKey",
 	}
 )
+
+// returns a copy of labels from obj that start with any allowed prefix.
+// excludes keys we manage or that are kube/systemy by default.
+func (r *VciReconciler) passthroughVCILabels(all map[string]string) map[string]string {
+	out := map[string]string{}
+	if len(all) == 0 {
+		return out
+	}
+	// defaults if none provided
+	prefixes := r.Opts.PassthroughPrefixes
+	if len(prefixes) == 0 {
+		prefixes = []string{"flux-app/"} // sensible default
+	}
+	// keys we own and should never overwrite
+	reserved := map[string]struct{}{
+		"app.kubernetes.io/managed-by": {},
+		"fluxcd.io/kubeconfig":         {},
+		"fluxcd.io/secret-type":        {},
+		"vci.flux.loft.sh/name":        {},
+		"vci.flux.loft.sh/namespace":   {},
+	}
+	for k, v := range all {
+		// skip reserved & common system prefixes
+		if _, ok := reserved[k]; ok {
+			continue
+		}
+		if strings.HasPrefix(k, "kubernetes.io/") || strings.HasPrefix(k, "k8s.io/") || strings.HasPrefix(k, "app.kubernetes.io/") {
+			continue
+		}
+		// match on any configured prefix
+		for _, p := range prefixes {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if strings.HasPrefix(k, p) {
+				out[k] = v
+				break
+			}
+		}
+	}
+	return out
+}
 
 func (r *VciReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	u := &unstructured.Unstructured{}
@@ -164,6 +208,14 @@ func (r *VciReconciler) upsertFluxSecretInNS(ctx context.Context, vci *unstructu
 		"fluxcd.io/secret-type":        "cluster",
 		"vci.flux.loft.sh/name":        vci.GetName(),
 		"vci.flux.loft.sh/namespace":   vci.GetNamespace(),
+	}
+	// merge VCI label passthrough
+	pt := r.passthroughVCILabels(vci.GetLabels())
+	for k, v := range pt {
+	  // don't allow passthrough to clobber reserved
+	  if _, exists := lbl[k]; !exists {
+	    lbl[k] = v
+	  }
 	}
 	ann := map[string]string{
 		"vci.flux.loft.sh/kcfg-sha256": sumHex,
