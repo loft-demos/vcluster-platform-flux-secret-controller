@@ -291,26 +291,30 @@ func (r *VciReconciler) deleteTokenSecret(ctx context.Context, vciName string) e
 }
 
 func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstructured.Unstructured) (string, error) {
-	// 0) Reuse token if present
+	// 0) Load existing token (if any)
+	var token string
 	var tokSec corev1.Secret
 	tokName := tokenSecretName(r.Opts.SecretPrefix, vci.GetName())
 	if err := r.Get(ctx, types.NamespacedName{Name: tokName, Namespace: r.Opts.ControllerNamespace}, &tokSec); err == nil {
 		if b, ok := tokSec.Data["token"]; ok && len(b) > 0 {
-			return string(b), nil
+			token = string(b)
 		}
 	}
 
-	// 1) Mint token
-	token, err := randomToken(48)
-	if err != nil {
-		return "", err
+	// 1) Mint token if missing
+	if token == "" {
+		t, err := randomToken(48)
+		if err != nil {
+			return "", err
+		}
+		token = t
 	}
 
-	// 2) Upsert AccessKey (unstructured)
+	// 2) Upsert AccessKey (unstructured) with THIS token
 	ak := unstructured.Unstructured{}
 	ak.SetGroupVersionKind(gvkAK)
 	ak.SetName(accessKeyName(vci.GetName()))
-	
+
 	project := projectFromNamespace(vci.GetNamespace())
 	spec := map[string]any{
 		"key":  token,
@@ -328,8 +332,8 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			"loft:system:vclusters",
 		},
 	}
-	
-	// common branding labels/annotations
+
+	// Branding
 	brandLabels := map[string]string{
 		"app.kubernetes.io/managed-by":        "vcluster-platform-flux-secret-controller",
 		"loft.sh/vcluster":                    "true",
@@ -339,10 +343,9 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 	brandAnns := map[string]string{
 		"vci.flux.loft.sh/vci": fmt.Sprintf("%s/%s", vci.GetNamespace(), vci.GetName()),
 	}
-	
-	err = r.Get(ctx, types.NamespacedName{Name: ak.GetName()}, &ak)
+
+	err := r.Get(ctx, types.NamespacedName{Name: ak.GetName()}, &ak)
 	if apierrors.IsNotFound(err) {
-		// create new AK with branding
 		ak.SetLabels(brandLabels)
 		ak.SetAnnotations(brandAnns)
 		_ = unstructured.SetNestedField(ak.Object, spec, "spec")
@@ -350,9 +353,7 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			return "", err
 		}
 	} else if err == nil {
-		// update existing AK: spec + merge branding
 		_ = unstructured.SetNestedField(ak.Object, spec, "spec")
-	
 		lbl := ak.GetLabels()
 		if lbl == nil {
 			lbl = map[string]string{}
@@ -361,7 +362,6 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			lbl[k] = v
 		}
 		ak.SetLabels(lbl)
-	
 		ann := ak.GetAnnotations()
 		if ann == nil {
 			ann = map[string]string{}
@@ -370,24 +370,14 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			ann[k] = v
 		}
 		ak.SetAnnotations(ann)
-	
 		if err := r.Update(ctx, &ak); err != nil {
 			return "", err
 		}
 	} else {
 		return "", err
 	}
-	
-	// (optional) safe fingerprint log so you can correlate kcfg token ↔ AK
-	if len(token) >= 6 {
-		r.Log.V(1).Info("AccessKey synced",
-			"vci", vci.GetName(),
-			"project", project,
-			"tokenPrefix", token[:6],
-		)
-	}
 
-	// 3) Persist token secret
+	// 3) Persist/refresh token Secret so future runs reuse the same token
 	save := corev1.Secret{
 		ObjectMeta: meta.ObjectMeta{
 			Name:      tokName,
@@ -405,6 +395,9 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 	if err := r.Create(ctx, &save); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			if e2 := r.Get(ctx, types.NamespacedName{Name: tokName, Namespace: r.Opts.ControllerNamespace}, &tokSec); e2 == nil {
+				if tokSec.Data == nil {
+					tokSec.Data = map[string][]byte{}
+				}
 				tokSec.Data["token"] = []byte(token)
 				if tokSec.Annotations == nil {
 					tokSec.Annotations = map[string]string{}
@@ -417,6 +410,11 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 		} else {
 			return "", err
 		}
+	}
+
+	// Optional: safe fingerprint for debugging
+	if len(token) >= 6 {
+		r.Log.V(1).Info("AccessKey ensured", "vci", vci.GetName(), "project", project, "tokenPrefix", token[:6])
 	}
 
 	return token, nil
