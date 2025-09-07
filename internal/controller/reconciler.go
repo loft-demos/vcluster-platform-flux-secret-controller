@@ -322,6 +322,12 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 	project := projectFromNamespace(vci.GetNamespace())
 	display := renderDisplayName(r.Opts.AccessKeyDisplayNameTmpl, vci.GetName(), project, vci.GetNamespace())
 
+	// pick AK type from options, default to "User"
+	akType := r.Opts.AccessKeyType
+	if akType == "" {
+	  akType = "User"
+	}
+
 	// Build spec like your Bash App example
 	spec := map[string]any{
 		"displayName": display,
