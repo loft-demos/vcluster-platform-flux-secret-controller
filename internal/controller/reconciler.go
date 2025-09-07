@@ -317,7 +317,7 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 	// 1) Upsert AccessKey with "User" shape (team + displayName), scoped to this VCI
 	ak := unstructured.Unstructured{}
 	ak.SetGroupVersionKind(gvkAK)
-	ak.SetName(accessKeyName(vci.GetName()))
+	ak.SetName(accessKeyName(project, vci.GetName()))
 
 	project := projectFromNamespace(vci.GetNamespace())
 	display := renderDisplayName(r.Opts.AccessKeyDisplayNameTmpl, vci.GetName(), project, vci.GetNamespace())
@@ -461,8 +461,8 @@ func tokenSecretName(prefix, vciName string) string {
 	return fmt.Sprintf("%s%s-ak", prefix, vciName)
 }
 
-func accessKeyName(vciName string) string {
-	return fmt.Sprintf("loft-vcluster-%s", vciName)
+func accessKeyName(project, vciName string) string {
+	return fmt.Sprintf("loft-vci-%s-%s", project, vciName)
 }
 
 // projectFromNamespace: best-effort derivation; customize if you store an explicit label.
