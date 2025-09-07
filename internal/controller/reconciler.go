@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"bytes"
+	"text/template"
 	"math/big"
 	"encoding/base64"
 	"fmt"
