@@ -161,6 +161,7 @@ func (r *VciReconciler) upsertFluxSecretInNS(ctx context.Context, vci *unstructu
 	lbl := map[string]string{
 		"app.kubernetes.io/managed-by": "vcluster-platform-flux-secret-controller",
 		"fluxcd.io/kubeconfig":         "true",
+		"fluxcd.io/secret-type":        "cluster",
 		"vci.flux.loft.sh/name":        vci.GetName(),
 		"vci.flux.loft.sh/namespace":   vci.GetNamespace(),
 	}
