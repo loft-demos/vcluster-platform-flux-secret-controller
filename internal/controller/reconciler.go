@@ -435,11 +435,16 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 }
 
 func randomToken(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
+    const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    b := make([]byte, n)
+    for i := range b {
+        num, err := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
+        if err != nil {
+            return "", err
+        }
+        b[i] = letters[num.Int64()]
+    }
+    return string(b), nil
 }
 
 func (r *VciReconciler) secretNameFor(vciName string) string {
