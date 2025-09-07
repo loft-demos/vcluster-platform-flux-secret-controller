@@ -6,11 +6,14 @@ import (
 	"strings"
 
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	_ "k8s.io/client-go/plugin/pkg/client/auth" // cloud auth providers
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	crlog "sigs.k8s.io/controller-runtime/pkg/log"       // NEW
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"         // NEW
 
 	"github.com/loft-demos/vcluster-platform-flux-secret-controller/internal/controller"
 )
@@ -19,6 +22,13 @@ func main() {
 	// Build a real scheme and register core types
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+
+	// ---- Logger setup (fixes "log.SetLogger(...) was never called") ----
+	zopts := zap.Options{
+		Development: false, // set true for verbose dev logs
+	}
+	zopts.BindFlags(flag.CommandLine) // allows --zap-log-level, --zap-devel, etc.
+	// -------------------------------------------------------------------
 
 	var (
 		labelSelector  string
@@ -48,6 +58,9 @@ func main() {
 
 	flag.Parse()
 
+	// Set the global logger AFTER flag.Parse so zap picks up CLI flags
+	crlog.SetLogger(zap.New(zap.UseFlagOptions(&zopts)))
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                server.Options{BindAddress: ":8080"},
@@ -59,7 +72,8 @@ func main() {
 		panic(err)
 	}
 
-	log := ctrl.Log.WithName("setup")
+	log := crlog.Log.WithName("setup")
+
 	opts := controller.Options{
 		LabelSelector:         labelSelector,
 		SecretKey:             secretKey,
