@@ -55,11 +55,15 @@ func renderServerURL(tmplStr string, vars serverVars) (string, error) {
 	return buf.String(), nil
 }
 
-func buildKubeconfigBytes(server, name, token string, caPEM []byte) ([]byte, string, error) {
+func buildKubeconfigBytes(server, _ignoredName, token string, caPEM []byte) ([]byte, string, error) {
+	const name = "loft" // fixed cluster/context/user name
+
 	cfg := Kubeconfig{
 		APIVersion: "v1",
 		Kind:       "Config",
 	}
+
+	// Cluster
 	cfg.Clusters = []struct {
 		Name    string `json:"name"`
 		Cluster struct {
@@ -79,10 +83,13 @@ func buildKubeconfigBytes(server, name, token string, caPEM []byte) ([]byte, str
 				if len(caPEM) > 0 {
 					out.CertificateAuthorityData = base64.StdEncoding.EncodeToString(caPEM)
 				}
+				// leave InsecureSkipTLSVerify unset (false) unless you *want* it true
 				return out
 			}(),
 		},
 	}
+
+	// Context
 	cfg.Contexts = []struct {
 		Name    string `json:"name"`
 		Context struct {
@@ -99,6 +106,8 @@ func buildKubeconfigBytes(server, name, token string, caPEM []byte) ([]byte, str
 		},
 	}
 	cfg.CurrentContext = name
+
+	// User
 	cfg.Users = []struct {
 		Name string `json:"name"`
 		User struct {
@@ -111,11 +120,11 @@ func buildKubeconfigBytes(server, name, token string, caPEM []byte) ([]byte, str
 		},
 	}
 
-	// JSON kubeconfig is accepted by client-go/Flux
 	j, err := json.Marshal(cfg)
 	if err != nil {
 		return nil, "", err
 	}
 	sum := sha256.Sum256(j)
-	return j, fmt.Sprintf("%x", sum), nil
+	return j, fmt.Sprintf("%x", sum[:]), nil
 }
+
