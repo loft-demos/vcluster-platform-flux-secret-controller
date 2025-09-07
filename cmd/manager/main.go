@@ -41,6 +41,7 @@ func main() {
 		caSecretKey    string
 		fluxNSPatterns string
 		controllerNS   string
+		passthroughLbls string
 	)
 
 	flag.StringVar(&labelSelector, "selector", "vcluster.com/import-fluxcd=true", "label selector for VCIs")
@@ -55,6 +56,7 @@ func main() {
 	flag.StringVar(&caSecretKey, "ca-secret-key", "ca.pem", "Key in Secret with PEM-encoded CA (optional)")
 	flag.StringVar(&fluxNSPatterns, "flux-namespaces", "flux-system", "comma-separated Flux namespace patterns (globs OK, e.g. 'flux-*,gitops-*')")
 	flag.StringVar(&controllerNS, "controller-namespace", "vci-flux-secret-controller", "namespace where this controller runs (stores AccessKey tokens)")
+	flag.StringVar(&passthroughLbls, "passthrough-label-prefixes", "flux-app/", "comma-separated label prefixes to copy from VCI to Flux Secret (e.g. 'flux-app/,rsip.loft.sh/')")
 
 	flag.Parse()
 
@@ -85,6 +87,7 @@ func main() {
 		CASecretKey:           caSecretKey,
 		FluxNamespacePatterns: strings.Split(fluxNSPatterns, ","),
 		ControllerNamespace:   controllerNS,
+		PassthroughPrefixes:   strings.Split(passthroughLbls, ","),
 	}
 	if err := controller.NewVciReconciler(mgr.GetClient(), log, opts).SetupWithManager(mgr); err != nil {
 		panic(err)
