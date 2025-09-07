@@ -3,10 +3,8 @@ package controller
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,8 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,11 +37,11 @@ type Options struct {
 
 type VciReconciler struct {
 	client.Client
-	Log  ctrl.Logger
+	Log  logr.Logger
 	Opts Options
 }
 
-func NewVciReconciler(c client.Client, log ctrl.Logger, opts Options) *VciReconciler {
+func NewVciReconciler(c client.Client, log logr.Logger, opts Options) *VciReconciler {
 	return &VciReconciler{Client: c, Log: log, Opts: opts}
 }
 
@@ -367,10 +365,4 @@ func projectFromNamespace(ns string) string {
 		return ns[2:]
 	}
 	return "default"
-}
-
-// Debug helper (unused): pretty print unstructured
-func dbgJSON(o any) string {
-	b, _ := json.MarshalIndent(o, "", "  ")
-	return string(b)
 }
