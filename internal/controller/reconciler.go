@@ -310,7 +310,7 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 	ak := unstructured.Unstructured{}
 	ak.SetGroupVersionKind(gvkAK)
 	ak.SetName(accessKeyName(vci.GetName()))
-
+	
 	project := projectFromNamespace(vci.GetNamespace())
 	spec := map[string]any{
 		"key":  token,
@@ -328,32 +328,63 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			"loft:system:vclusters",
 		},
 	}
+	
+	// common branding labels/annotations
+	brandLabels := map[string]string{
+		"app.kubernetes.io/managed-by":        "vcluster-platform-flux-secret-controller",
+		"loft.sh/vcluster":                    "true",
+		"loft.sh/vcluster-instance-name":      vci.GetName(),
+		"loft.sh/vcluster-instance-namespace": vci.GetNamespace(),
+	}
+	brandAnns := map[string]string{
+		"vci.flux.loft.sh/vci": fmt.Sprintf("%s/%s", vci.GetNamespace(), vci.GetName()),
+	}
+	
 	err = r.Get(ctx, types.NamespacedName{Name: ak.GetName()}, &ak)
 	if apierrors.IsNotFound(err) {
-		ak.SetLabels(map[string]string{
-			"loft.sh/vcluster":                    "true",
-			"loft.sh/vcluster-instance-name":      vci.GetName(),
-			"loft.sh/vcluster-instance-namespace": vci.GetNamespace(),
-		})
+		// create new AK with branding
+		ak.SetLabels(brandLabels)
+		ak.SetAnnotations(brandAnns)
 		_ = unstructured.SetNestedField(ak.Object, spec, "spec")
 		if err := r.Create(ctx, &ak); err != nil {
 			return "", err
 		}
 	} else if err == nil {
+		// update existing AK: spec + merge branding
 		_ = unstructured.SetNestedField(ak.Object, spec, "spec")
+	
 		lbl := ak.GetLabels()
 		if lbl == nil {
 			lbl = map[string]string{}
 		}
-		lbl["loft.sh/vcluster"] = "true"
-		lbl["loft.sh/vcluster-instance-name"] = vci.GetName()
-		lbl["loft.sh/vcluster-instance-namespace"] = vci.GetNamespace()
+		for k, v := range brandLabels {
+			lbl[k] = v
+		}
 		ak.SetLabels(lbl)
+	
+		ann := ak.GetAnnotations()
+		if ann == nil {
+			ann = map[string]string{}
+		}
+		for k, v := range brandAnns {
+			ann[k] = v
+		}
+		ak.SetAnnotations(ann)
+	
 		if err := r.Update(ctx, &ak); err != nil {
 			return "", err
 		}
 	} else {
 		return "", err
+	}
+	
+	// (optional) safe fingerprint log so you can correlate kcfg token ↔ AK
+	if len(token) >= 6 {
+		r.Log.V(1).Info("AccessKey synced",
+			"vci", vci.GetName(),
+			"project", project,
+			"tokenPrefix", token[:6],
+		)
 	}
 
 	// 3) Persist token secret
