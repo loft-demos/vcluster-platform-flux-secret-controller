@@ -1,4 +1,4 @@
-module github.com/yourorg/vcluster-platform-flux-secret-controller
+module github.com/loft-demos/vcluster-platform-flux-secret-controller
 
 go 1.23
 
