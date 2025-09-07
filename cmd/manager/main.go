@@ -94,6 +94,8 @@ func main() {
 		FluxNamespacePatterns: strings.Split(fluxNSPatterns, ","),
 		ControllerNamespace:   controllerNS,
 		PassthroughPrefixes:   strings.Split(passthroughLbls, ","),
+		AccessKeyType: akType,
+		AccessKeyTeam: akTeam,
 	}
 	if err := controller.NewVciReconciler(mgr.GetClient(), log, opts).SetupWithManager(mgr); err != nil {
 		panic(err)
