@@ -33,7 +33,7 @@ func main() {
 	flag.StringVar(&secretKey, "secret-key", "value", "Secret.data key to store kubeconfig (Flux expects 'value' or 'value.yaml')")
 	flag.StringVar(&secretPrefix, "secret-name-prefix", "vci-", "prefix for created kubeconfig secret names")
 	flag.StringVar(&serverTmpl, "server-template",
-		"https://{{ .Domain }}/kubernetes/virtualclusters/{{ .Project }}/{{ .Name }}",
+		"https://{{ .Domain }}/kubernetes/project/{{ .Project }}/virtualcluster/{{ .Name }}",
 		"Go template for kube-apiserver URL (vars: Domain, Project, Namespace, Name)")
 	flag.StringVar(&loftDomain, "loft-domain", "beta.us.demo.dev", "Base domain used in --server-template")
 	flag.StringVar(&caSecretNS, "ca-secret-namespace", "", "Namespace of Secret with custom CA PEM (optional)")
