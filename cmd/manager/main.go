@@ -42,6 +42,9 @@ func main() {
 		fluxNSPatterns string
 		controllerNS   string
 		passthroughLbls string
+		akType         string
+		akTeam         string
+		akDisplayNameTmpl string
 	)
 
 	flag.StringVar(&labelSelector, "selector", "vcluster.com/import-fluxcd=true", "label selector for VCIs")
@@ -57,6 +60,9 @@ func main() {
 	flag.StringVar(&fluxNSPatterns, "flux-namespaces", "flux-system", "comma-separated Flux namespace patterns (globs OK, e.g. 'flux-*,gitops-*')")
 	flag.StringVar(&controllerNS, "controller-namespace", "vci-flux-secret-controller", "namespace where this controller runs (stores AccessKey tokens)")
 	flag.StringVar(&passthroughLbls, "passthrough-label-prefixes", "flux-app/", "comma-separated label prefixes to copy from VCI to Flux Secret (e.g. 'flux-app/,rsip.loft.sh/')")
+	flag.StringVar(&akType, "accesskey-type", "User", "AccessKey spec.type (User|Other)")
+	flag.StringVar(&akTeam, "accesskey-team", "loft-admins", "AccessKey team (used when type=User)")
+	flag.StringVar(&akDisplayNameTmpl, "accesskey-display-name-template", "flux-{{ .Name }}", "Go template for AccessKey displayName (vars: Name, Project, Namespace)")
 
 	flag.Parse()
 
