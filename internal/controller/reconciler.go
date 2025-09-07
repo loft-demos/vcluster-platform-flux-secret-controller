@@ -35,6 +35,9 @@ type Options struct {
 	FluxNamespacePatterns []string
 	ControllerNamespace   string
 	PassthroughPrefixes   []string
+	AccessKeyType         string // "User" or "Other"
+	AccessKeyTeam         string // e.g., "loft-admins"
+	AccessKeyDisplayNameTmpl string // e.g., "flux-{{ .Name }}"
 }
 
 type VciReconciler struct {
@@ -292,7 +295,7 @@ func (r *VciReconciler) deleteTokenSecret(ctx context.Context, vciName string) e
 }
 
 func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstructured.Unstructured) (string, error) {
-	// 0) Load existing token (if any)
+	// 0) Load or mint token (64-char alnum)
 	var token string
 	var tokSec corev1.Secret
 	tokName := tokenSecretName(r.Opts.SecretPrefix, vci.GetName())
@@ -301,43 +304,38 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			token = string(b)
 		}
 	}
-
-	// 1) Mint token if missing
 	if token == "" {
-		t, err := randomToken(64)
+		t, err := randomToken(64) // 64 chars
 		if err != nil {
 			return "", err
 		}
 		token = t
 	}
 
-	// 2) Upsert AccessKey (cluster-scoped CR, unstructured)
+	// 1) Upsert AccessKey with "User" shape (team + displayName), scoped to this VCI
 	ak := unstructured.Unstructured{}
 	ak.SetGroupVersionKind(gvkAK)
 	ak.SetName(accessKeyName(vci.GetName()))
 
 	project := projectFromNamespace(vci.GetNamespace())
-	subject := fmt.Sprintf("loft:vcluster:%s:%s", vci.GetNamespace(), vci.GetName())
+	display := renderDisplayName(r.Opts.AccessKeyDisplayNameTmpl, vci.GetName(), project, vci.GetNamespace())
 
+	// Build spec like your Bash App example
 	spec := map[string]any{
-		// REQUIRED in many setups:
-		"subject": subject,
-		"key":     token,
-		"type":    "Other",
+		"displayName": display,
+		"key":         token,
 		"scope": map[string]any{
-			"roles": []any{
-				map[string]any{"role": "vcluster"},
-			},
 			"virtualClusters": []any{
 				map[string]any{"project": project, "virtualCluster": vci.GetName()},
 			},
 		},
-		"groups": []any{
-			subject,               // same as subject
-			"loft:system:vclusters",
-		},
+		"type": r.Opts.AccessKeyType, // default "User"
+	}
+	if strings.EqualFold(r.Opts.AccessKeyType, "User") && r.Opts.AccessKeyTeam != "" {
+		spec["team"] = r.Opts.AccessKeyTeam
 	}
 
+	// Branding labels/annotations (keep for debugging/ownership)
 	brandLabels := map[string]string{
 		"app.kubernetes.io/managed-by":        "vcluster-platform-flux-secret-controller",
 		"loft.sh/vcluster":                    "true",
@@ -348,12 +346,13 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 		"vci.flux.loft.sh/vci": fmt.Sprintf("%s/%s", vci.GetNamespace(), vci.GetName()),
 	}
 
+	// Upsert
 	if err := r.Get(ctx, types.NamespacedName{Name: ak.GetName()}, &ak); apierrors.IsNotFound(err) {
 		ak.SetLabels(brandLabels)
 		ak.SetAnnotations(brandAnns)
 		_ = unstructured.SetNestedField(ak.Object, spec, "spec")
 		if err := r.Create(ctx, &ak); err != nil {
-			r.Log.Error(err, "failed to create AccessKey", "name", ak.GetName(), "subject", subject)
+			r.Log.Error(err, "failed to create AccessKey", "name", ak.GetName())
 			return "", err
 		}
 	} else if err == nil {
@@ -366,7 +365,6 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			lbl[k] = v
 		}
 		ak.SetLabels(lbl)
-
 		ann := ak.GetAnnotations()
 		if ann == nil {
 			ann = map[string]string{}
@@ -375,9 +373,8 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			ann[k] = v
 		}
 		ak.SetAnnotations(ann)
-
 		if err := r.Update(ctx, &ak); err != nil {
-			r.Log.Error(err, "failed to update AccessKey", "name", ak.GetName(), "subject", subject)
+			r.Log.Error(err, "failed to update AccessKey", "name", ak.GetName())
 			return "", err
 		}
 	} else {
@@ -385,7 +382,7 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 		return "", err
 	}
 
-	// 3) Persist/refresh token Secret
+	// 2) Persist/refresh token Secret
 	save := corev1.Secret{
 		ObjectMeta: meta.ObjectMeta{
 			Name:      tokName,
@@ -424,10 +421,10 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 
 	// Debug fingerprint (safe)
 	if len(token) >= 6 {
-		r.Log.V(1).Info("AccessKey ensured",
-			"vci", vci.GetName(),
+		r.Log.V(1).Info("AccessKey ensured (User/team style)",
+			"displayName", display,
+			"team", r.Opts.AccessKeyTeam,
 			"project", project,
-			"subject", subject,
 			"tokenPrefix", token[:6],
 		)
 	}
@@ -467,4 +464,20 @@ func projectFromNamespace(ns string) string {
 		return ns[2:]
 	}
 	return "default"
+}
+
+func renderDisplayName(tmpl string, name, project, namespace string) string {
+	if tmpl == "" {
+		return name
+	}
+	type m struct{ Name, Project, Namespace string }
+	t, err := template.New("akDisplay").Parse(tmpl)
+	if err != nil {
+		return name
+	}
+	var b bytes.Buffer
+	if err := t.Execute(&b, m{Name: name, Project: project, Namespace: namespace}); err != nil {
+		return name
+	}
+	return b.String()
 }
