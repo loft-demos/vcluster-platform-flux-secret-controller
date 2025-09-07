@@ -310,15 +310,19 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 		token = t
 	}
 
-	// 2) Upsert AccessKey (unstructured) with THIS token
+	// 2) Upsert AccessKey (cluster-scoped CR, unstructured)
 	ak := unstructured.Unstructured{}
 	ak.SetGroupVersionKind(gvkAK)
 	ak.SetName(accessKeyName(vci.GetName()))
 
 	project := projectFromNamespace(vci.GetNamespace())
+	subject := fmt.Sprintf("loft:vcluster:%s:%s", vci.GetNamespace(), vci.GetName())
+
 	spec := map[string]any{
-		"key":  token,
-		"type": "Other",
+		// REQUIRED in many setups:
+		"subject": subject,
+		"key":     token,
+		"type":    "Other",
 		"scope": map[string]any{
 			"roles": []any{
 				map[string]any{"role": "vcluster"},
@@ -328,12 +332,11 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			},
 		},
 		"groups": []any{
-			fmt.Sprintf("loft:vcluster:%s:%s", vci.GetNamespace(), vci.GetName()),
+			subject,               // same as subject
 			"loft:system:vclusters",
 		},
 	}
 
-	// Branding
 	brandLabels := map[string]string{
 		"app.kubernetes.io/managed-by":        "vcluster-platform-flux-secret-controller",
 		"loft.sh/vcluster":                    "true",
@@ -344,12 +347,12 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 		"vci.flux.loft.sh/vci": fmt.Sprintf("%s/%s", vci.GetNamespace(), vci.GetName()),
 	}
 
-	err := r.Get(ctx, types.NamespacedName{Name: ak.GetName()}, &ak)
-	if apierrors.IsNotFound(err) {
+	if err := r.Get(ctx, types.NamespacedName{Name: ak.GetName()}, &ak); apierrors.IsNotFound(err) {
 		ak.SetLabels(brandLabels)
 		ak.SetAnnotations(brandAnns)
 		_ = unstructured.SetNestedField(ak.Object, spec, "spec")
 		if err := r.Create(ctx, &ak); err != nil {
+			r.Log.Error(err, "failed to create AccessKey", "name", ak.GetName(), "subject", subject)
 			return "", err
 		}
 	} else if err == nil {
@@ -362,6 +365,7 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			lbl[k] = v
 		}
 		ak.SetLabels(lbl)
+
 		ann := ak.GetAnnotations()
 		if ann == nil {
 			ann = map[string]string{}
@@ -370,14 +374,17 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 			ann[k] = v
 		}
 		ak.SetAnnotations(ann)
+
 		if err := r.Update(ctx, &ak); err != nil {
+			r.Log.Error(err, "failed to update AccessKey", "name", ak.GetName(), "subject", subject)
 			return "", err
 		}
 	} else {
+		r.Log.Error(err, "failed to GET AccessKey", "name", ak.GetName())
 		return "", err
 	}
 
-	// 3) Persist/refresh token Secret so future runs reuse the same token
+	// 3) Persist/refresh token Secret
 	save := corev1.Secret{
 		ObjectMeta: meta.ObjectMeta{
 			Name:      tokName,
@@ -404,17 +411,24 @@ func (r *VciReconciler) ensureAccessKeyAndToken(ctx context.Context, vci *unstru
 				}
 				tokSec.Annotations["vci.flux.loft.sh/vci"] = fmt.Sprintf("%s/%s", vci.GetNamespace(), vci.GetName())
 				if e3 := r.Update(ctx, &tokSec); e3 != nil {
+					r.Log.Error(e3, "failed to update token Secret", "name", tokName)
 					return "", e3
 				}
 			}
 		} else {
+			r.Log.Error(err, "failed to create token Secret", "name", tokName)
 			return "", err
 		}
 	}
 
-	// Optional: safe fingerprint for debugging
+	// Debug fingerprint (safe)
 	if len(token) >= 6 {
-		r.Log.V(1).Info("AccessKey ensured", "vci", vci.GetName(), "project", project, "tokenPrefix", token[:6])
+		r.Log.V(1).Info("AccessKey ensured",
+			"vci", vci.GetName(),
+			"project", project,
+			"subject", subject,
+			"tokenPrefix", token[:6],
+		)
 	}
 
 	return token, nil
