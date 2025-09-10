@@ -1,3 +1,5 @@
+# vcluster-platform-flux-secret-controller
+
 A lightweight Kubernetes controller that integrates **vCluster Platform** with **Flux** by automatically creating Flux Kubeconfig reference `Secrets` for VirtualClusterInstances (VCIs). These `Secrets` can then be used as references for Flux `HelmRelease` or `Kustomization` resources, enabling seamless GitOps deployments into dynamic vCluster instances.
 
 ---
