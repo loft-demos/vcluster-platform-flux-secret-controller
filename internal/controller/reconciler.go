@@ -203,66 +203,87 @@ func (r *VciReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 // ----- helpers -----
 
-func (r *VciReconciler) upsertFluxSecretInNS(ctx context.Context, vci *unstructured.Unstructured, project, ns string, kcfg []byte, sumHex string) error {
-	name := r.secretNameFor(project, vci.GetName())
-	k := r.Opts.SecretKey
-	want := map[string][]byte{k: kcfg}
+func (r *VciReconciler) upsertFluxSecretInNS(
+    ctx context.Context,
+    vci *unstructured.Unstructured,
+    project, ns string,
+    kcfg []byte,
+    sumHex string,
+) error {
+    name := r.secretNameFor(project, vci.GetName())
+    k := r.Opts.SecretKey
+    want := map[string][]byte{k: kcfg}
 
-	// base labels we always set
-	lbl := map[string]string{
-		"app.kubernetes.io/managed-by": "vcluster-platform-flux-secret-controller",
-		"fluxcd.io/kubeconfig":         "true",
-		"fluxcd.io/secret-type":        "cluster",
-		"vci.flux.loft.sh/name":        vci.GetName(),
-		"vci.flux.loft.sh/namespace":   vci.GetNamespace(),
-		"vci.flux.loft.sh/project":     project,
-	}
-	// merge ALL user labels from VCI (minus reserved/system), without clobbering our base
-	for k2, v2 := range r.copyAllVCILabels(vci.GetLabels()) {
-		if _, reserved := lbl[k2]; !reserved {
-			lbl[k2] = v2
-		}
-	}
+    // base labels we always set
+    lbl := map[string]string{
+        "app.kubernetes.io/managed-by": "vcluster-platform-flux-secret-controller",
+        "fluxcd.io/kubeconfig":         "true",
+        "fluxcd.io/secret-type":        "cluster",
+        "vci.flux.loft.sh/name":        vci.GetName(),
+        "vci.flux.loft.sh/namespace":   vci.GetNamespace(),
+        "vci.flux.loft.sh/project":     project,
+    }
+    // merge ALL user labels from VCI (minus reserved/system)
+    for k2, v2 := range r.copyAllVCILabels(vci.GetLabels()) {
+        if _, reserved := lbl[k2]; !reserved {
+            lbl[k2] = v2
+        }
+    }
 
-	ann := map[string]string{
-		"vci.flux.loft.sh/kcfg-sha256": sumHex,
-	}
+    ann := map[string]string{
+        "vci.flux.loft.sh/kcfg-sha256": sumHex,
+    }
 
-	var existing corev1.Secret
-	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &existing)
-	if apierrors.IsNotFound(err) {
-		sec := corev1.Secret{
-			ObjectMeta: meta.ObjectMeta{
-				Name:        name,
-				Namespace:   ns,
-				Labels:      lbl,
-				Annotations: ann,
-			},
-			Type: corev1.SecretTypeOpaque,
-			Data: want,
-		}
-		return r.Create(ctx, &sec)
-	} else if err != nil {
-		return err
-	}
+    var existing corev1.Secret
+    if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &existing); err != nil {
+        if apierrors.IsNotFound(err) {
+            sec := corev1.Secret{
+                ObjectMeta: meta.ObjectMeta{
+                    Name:        name,
+                    Namespace:   ns,
+                    Labels:      lbl,
+                    Annotations: ann,
+                },
+                Type: corev1.SecretTypeOpaque,
+                Data: want,
+            }
+            return r.Create(ctx, &sec)
+        }
+        return err
+    }
 
-	changed := base64.StdEncoding.EncodeToString(existing.Data[k]) != base64.StdEncoding.EncodeToString(want[k]) ||
-		existing.Annotations["vci.flux.loft.sh/kcfg-sha256"] != sumHex
-	if changed {
-		existing.Data = want
-		if existing.Annotations == nil {
-			existing.Annotations = map[string]string{}
-		}
-		existing.Annotations["vci.flux.loft.sh/kcfg-sha256"] = sumHex
-		if existing.Labels == nil {
-			existing.Labels = map[string]string{}
-		}
-		for k2, v2 := range lbl {
-			existing.Labels[k2] = v2
-		}
-		return r.Update(ctx, &existing)
-	}
-	return nil
+    // ---- UPDATE path: detect drift in data, annotations, OR labels ----
+    dataChanged := base64.StdEncoding.EncodeToString(existing.Data[k]) != base64.StdEncoding.EncodeToString(want[k])
+    annChanged := existing.Annotations == nil || existing.Annotations["vci.flux.loft.sh/kcfg-sha256"] != sumHex
+
+    // build the would-be label map and compare
+    desiredLabels := map[string]string{}
+    for k2, v2 := range existing.Labels { // start from existing to preserve unrelated keys you might want to keep
+        desiredLabels[k2] = v2
+    }
+    for k2, v2 := range lbl { // ensure our desired keys/values are present
+        desiredLabels[k2] = v2
+    }
+    labelsChanged := !equalStringMap(existing.Labels, desiredLabels)
+
+    if dataChanged || annChanged || labelsChanged {
+        existing.Data = want
+
+        if existing.Annotations == nil {
+            existing.Annotations = map[string]string{}
+        }
+        existing.Annotations["vci.flux.loft.sh/kcfg-sha256"] = sumHex
+
+        if existing.Labels == nil {
+            existing.Labels = map[string]string{}
+        }
+        for k2, v2 := range desiredLabels {
+            existing.Labels[k2] = v2
+        }
+
+        return r.Update(ctx, &existing)
+    }
+    return nil
 }
 
 // return number of secrets deleted
@@ -509,3 +530,23 @@ func renderDisplayName(tmpl string, name, project, namespace string) string {
 	}
 	return b.String()
 }
+
+// at top of file
+import (
+    "encoding/base64"
+    // ...
+)
+
+// helper: compare map[string]string ignoring nil vs empty and order
+func equalStringMap(a, b map[string]string) bool {
+    if len(a) != len(b) {
+        return false
+    }
+    for k, va := range a {
+        if vb, ok := b[k]; !ok || vb != va {
+            return false
+        }
+    }
+    return true
+}
+
