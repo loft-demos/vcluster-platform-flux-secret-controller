@@ -531,12 +531,6 @@ func renderDisplayName(tmpl string, name, project, namespace string) string {
 	return b.String()
 }
 
-// at top of file
-import (
-    "encoding/base64"
-    // ...
-)
-
 // helper: compare map[string]string ignoring nil vs empty and order
 func equalStringMap(a, b map[string]string) bool {
     if len(a) != len(b) {
